@@ -4,5 +4,3 @@
 *.mod
 build/
 HamGNN.egg-info/
-graph/
-dist/
