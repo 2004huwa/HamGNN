@@ -50,10 +50,12 @@ if [[ ! -r ${libgomp_archive} ]]; then
     exit 2
 fi
 
-extra_options=()
+cmake_options=(-DCMAKE_BUILD_TYPE=Release
+    "-DCMAKE_CXX_COMPILER:FILEPATH=${cxx_compiler}"
+    "-DOpenMP_gomp_LIBRARY=${libgomp_archive}")
 if [[ ! -f ${source_dir}/cmake/Sources.cmake ]]; then
     # Retain compatibility with an already-patched full developer checkout.
-    extra_options=(-DENABLE_MPI=OFF -DENABLE_LCAO=ON -DENABLE_OPENMP=ON
+    cmake_options+=(-DENABLE_MPI=OFF -DENABLE_LCAO=ON -DENABLE_OPENMP=ON
         -DBUILD_TESTING=OFF -DMKL_LINK=static -DH0LITE_MKL_SEQUENTIAL=ON
         -DH0LITE_PORTABLE_STATIC=ON -DCOMMIT_INFO=OFF)
 fi
@@ -71,11 +73,7 @@ if [[ -f ${build_dir}/CMakeCache.txt ]]; then
     fi
 fi
 
-cmake -S "${source_dir}" -B "${build_dir}" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_CXX_COMPILER:FILEPATH="${cxx_compiler}" \
-    -DOpenMP_gomp_LIBRARY="${libgomp_archive}" \
-    "${extra_options[@]}"
+cmake -S "${source_dir}" -B "${build_dir}" "${cmake_options[@]}"
 
 cmake --build "${build_dir}" --target abacus_h0lite --parallel "${build_cpus}"
 dynamic_info=$(readelf -d "${build_dir}/abacus_h0")

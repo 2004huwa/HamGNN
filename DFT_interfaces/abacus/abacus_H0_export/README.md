@@ -52,7 +52,9 @@ newer `g++`. The script checks GCC before configuring and passes its absolute
 path to CMake. On a compiler change it preserves the old CMake cache and
 compiler metadata in `BUILD_DIR/compiler-cache-backup.XXXXXX/` and configures
 again. Rerun the same command after loading GCC 9+; manual cache deletion is
-not required. The Chinese guide includes the current mgt module commands.
+not required. CMake arguments are kept in a nonempty array so the standalone
+build also works under Bash 4.2 with `set -u`. The Chinese guide includes the
+current mgt module commands.
 
 `abacus_h0` is a single-file, MPI-free x86_64 Linux executable derived from
 ABACUS 3.11. It reads an ordinary LCAO SCF case but evaluates only

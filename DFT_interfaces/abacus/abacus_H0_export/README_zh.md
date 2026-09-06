@@ -324,6 +324,7 @@ bash ./build_h0lite_single.sh . /path/to/build-h0lite /path/to/bin/abacus_h0
 如果曾使用系统 GCC 8.5 配置，加载 GCC 10.5 后直接重跑即可；检测到
 编译器改变时，旧 `CMakeCache.txt` 和 `CMakeFiles/` 会移入构建目录的
 `compiler-cache-backup.XXXXXX/`，然后重新配置，无需手动删除源码或缓存。
+构建参数数组始终非空，兼容 CentOS 7 的 Bash 4.2 与 `set -u` 组合。
 
 主体源码来自 ABACUS 3.11.0-beta8 commit
 `d88b719ea287e13b0e133eb57b8e16baa5361fa6`，已应用 H0Lite 修改；
