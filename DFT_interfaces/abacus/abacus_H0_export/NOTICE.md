@@ -4,7 +4,7 @@ H0Lite is a modified subset of ABACUS 3.11.0-beta8, not an official ABACUS
 release. Upstream: https://github.com/deepmodeling/abacus-develop, commit
 `d88b719ea287e13b0e133eb57b8e16baa5361fa6`.
 
-Modification date: **2026-09-06**. Package revision: `h0lite-v311-20260906`.
+Modification date: **2026-09-06**. Package revision: `h0lite-v311-simpson-20260906`.
 Modifications by HamGNN H0Lite contributors (2004huwa); copyright (C) 2026 for
 their additions. Original authors' copyright and license notices are retained.
 ABACUS is licensed under LGPLv3; the new H0Lite code is LGPL-3.0-or-later.
@@ -16,6 +16,15 @@ SCF-compatible input parsing, batch/Slurm scheduling, and standalone static
 builds. `SOURCE_INFO.md` inside the archive lists modified upstream files.
 The optional MemCheckDeluxe debug header is excluded from the trimmed package:
 it is unused by H0Lite and its referenced complete license was unavailable.
+
+Numerical integration uses the ABACUS 3.11 finite-grid Simpson implementation.
+Changes add an explicitly selected H0 table mode for historical distance-grid,
+cutoff and four-point interpolation conventions, and parallelize independent
+direct-transform rows. The historical scalar diagonal-projector convention is
+retained in the H0 frontend. Imported `ORB_gen_tables`, `ORB_table_phi` and
+`ORB_table_beta` modules from the previous revision are no longer included.
+The separate historical 3.5.3 archive remains unchanged and is not compiled
+into H0Lite. Original 3.11 notices and full GPLv3/LGPLv3 texts are retained.
 
 ## Source and binary distribution
 

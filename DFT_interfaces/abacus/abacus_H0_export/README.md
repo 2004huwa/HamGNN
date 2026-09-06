@@ -20,12 +20,12 @@ oneAPI symlinks. For a nonstandard layout, set `H0LITE_MKL_LICENSE_DIR` to the
 licensing directory from that exact installation; another version's notices
 are not a substitute.
 
-This archive was built from a fresh extraction with GCC 10.5.0, CMake 3.31.7,
-oneMKL 2023.2.0, and glibc 2.28. Both default H0 and `--with-vl` execution
-passed; only basic glibc libraries remained dynamically linked.
-The 2026-09-06 licensing revision was rebuilt from a fresh extraction with
-oneMKL 2024.2 and passed both calculation modes and embedded-license checks.
-License discovery was also checked for 2023.2/2024.2 and missing notices.
+The current 3.11-Simpson revision was built from a fresh extraction with
+GCC 10.5.0, CMake 3.31.7, oneMKL 2024.2, and glibc 2.28. Both default H0 and
+`--with-vl` executed successfully; only basic glibc libraries remain dynamically
+linked. Numerical validation is described below. Earlier revisions also built
+with oneMKL 2023.2.0. License discovery was checked for 2023.2/2024.2 and missing
+notices, and the current executable's embedded-license output was checked.
 
 Extract outside the repository and build on allocated compute resources:
 
@@ -58,6 +58,37 @@ not required. The Chinese guide includes the current mgt module commands.
 ABACUS 3.11. It reads an ordinary LCAO SCF case but evaluates only
 `H0=T+Vnl` and `S0`; `--with-vl` changes H0 to `T+Vnl+Vl`. It runs no SCF
 iteration and no diagonalization.
+
+The `h0lite-v311-simpson-20260906` revision uses ABACUS 3.11's finite-grid
+Simpson integrator and orbital/projector transforms. An explicitly selected
+H0 table mode restores historical distance spacing, per-pair cutoff/padding
+and four-point interpolation; scalar diagonal-projector D is retained.
+Imported legacy table modules are no longer included or compiled. Ordinary
+3.11 tables keep their default spline path; independent direct-transform rows
+use OpenMP without changing per-row arithmetic. This compatibility mode is
+not equivalent to native 3.11 FFT/full-projector numerics when pairing H/S.
+
+The marker generator is now `ABACUS-3.11-H0Lite-native-simpson-v3`.
+Previous v1/FFT and v2/imported-table markers are rejected without overwriting or silently reusing
+their matrices. Export into a fresh case/output directory when upgrading;
+do not relabel old markers as new results. CLI arguments remain unchanged.
+The optional Vl contribution remains merged into H0 and is tested separately
+from the historical default-H0 comparison. The retained 3.5.3 archive is a
+historical reference, not a build dependency; see SOURCE_INFO.md in the archive.
+
+Acceptance compares 10 TiO2 and 6 Si cases with the real exporter built from
+the retained 3.5.3 archive, using identical structures, pseudopotentials,
+orbitals and physical inputs. Both maximum-absolute and relative-Frobenius
+differences must be at most `1e-8` for H0 (Ry) and S0 (dimensionless).
+This coverage does not establish arbitrary pseudopotential/orbital or
+unsupported calculation-mode compatibility.
+
+On 2026-09-06 all 16 cases passed: worst absolute differences were about
+`1e-10` for both matrices, with relative differences below `2.36e-12` (H0)
+and `1.30e-11` (S0). Two separate 16-case Slurm jobs on the same node,
+16 CPUs and four concurrent cases each took 50 seconds from submission to
+completion (previous imported tables versus this revision). This observed
+no end-to-end slowdown; it does not establish a significant speedup.
 
 ```bash
 cd CASE

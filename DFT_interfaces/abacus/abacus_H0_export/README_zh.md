@@ -41,6 +41,36 @@ diagonalizations = 0
 Hartree、交换关联、DFT+U、EXX、DeePKS 等密度或电子态相关项始终不进入
 H0。
 
+### 与旧 3.5.3 的数值兼容
+
+当前修订 `h0lite-v311-simpson-20260906` 直接使用 ABACUS 3.11 的
+有限 k 网格 Simpson 积分器、轨道/投影子变换和矩阵组装，不再编译
+移植的旧积分表模块。仅为 H0 显式选择固定距离网格、逐对截止/辅助点
+和四点插值，并保留历史标量非局域赝势的对角 D 约定。普通 3.11 的
+默认样条路径不变；独立距离点的直接积分采用 OpenMP 并行。
+这是复现旧版的数值兼容路径，不等同于原生 3.11 的默认 FFT 和完整
+径向投影子耦合；下游将 H 与 S0 配对时仍须明确数值约定。
+
+完成标记的 generator 已更新为
+`ABACUS-3.11-H0Lite-native-simpson-v3`。旧版 H0Lite 的 v1/FFT 和
+v2/移植积分表标记会被拒绝，既不静默跳过，也不覆盖其矩阵。升级后应在新的 case/
+输出目录重新导出，不要通过改写标记让旧结果冒充新结果。调用参数不变。
+
+`--with-vl` 仍只把局域离子势加进 H0；它不属于旧包默认 H0 的数值对照。
+`legacy_v353/` 及其四个编译单元已移除；保留的旧 3.5.3 压缩包仅用于
+历史参考，不参与 H0Lite 构建。源码来源见包内 `SOURCE_INFO.md`。
+
+数值验收使用旧包编译的真实 3.5.3 导出器，同一批 10 个 TiO2 和
+6 个 Si 结构、同一赝势/轨道和物理输入。H0（Ry）与 S0（无量纲）
+均要求最大绝对差及相对 Frobenius 差不超过 `1e-8`。这一验收范围
+不代表任意赝势、轨道或未支持模式均已验证。
+
+2026-09-06 实测上述 16 例全部通过：H0/S0 最大绝对差均约 `1e-10`，
+最大相对 Frobenius 差分别为 `2.36e-12`、`1.30e-11`。相同节点、
+16 核、4 case 并发下，两组独立 Slurm 作业各完整计算 16 例，从提交
+到结束均为 50 秒（旧积分表实现与本修订），未观察到总耗时退化；
+这不是单例外推，也不是显著提速的证据。
+
 ## 输入要求
 
 case 目录沿用普通 ABACUS LCAO SCF 输入：
@@ -57,7 +87,8 @@ STRU、赝势和轨道也可由 INPUT 中的 `stru_file`、`pseudo_dir`、
 `orbital_dir` 指定。当前严格支持 `basis_type=lcao`、`gamma_only=0`、标量
 `nspin=1`、无 SOC 和守恒赝势。
 
-程序使用 ABACUS 3.11 自身的 INPUT/STRU/UPF/轨道解析和数值积分代码。旧
+程序使用 ABACUS 3.11 的 INPUT/STRU/UPF/轨道解析；H0/S0 使用上述
+3.5.3 兼容积分路径，可选 Vl 使用 3.11 的局域势积分。旧
 3.10 INPUT 中已取消注册的 `out_interval` 会被删除，其余参数保持不变并
 保存为 `INPUT.resolved`。`KPT` 不参与实空间 H0/S0 构造。CSR 精度来自
 INPUT 的 `out_hsr`，旧参数 `out_mat_hs2` 仍按 3.11 别名规则解析。3.11
@@ -230,12 +261,12 @@ export H0LITE_MKL_LICENSE_DIR=/path/to/the/same/mkl/installation/licensing
 也可直接配置 CMake 时传 `-DH0LITE_MKL_LICENSE_DIR=/path/to/licensing`。
 缺失时构建会明确报错，不能拿另一版本的许可文本替代。
 
-本源码包已在 GCC 10.5.0、CMake 3.31.7、oneMKL 2023.2.0、glibc 2.28
-环境从新解压目录完成编译，并运行通过默认 H0 和 `--with-vl` 两种模式。
+当前 3.11-Simpson 修订已在 GCC 10.5.0、CMake 3.31.7、oneMKL 2024.2、
+glibc 2.28 环境从新解压目录完成编译，默认 H0 和 `--with-vl` 均成功
+运行，数值验证见上文。
 生成文件仅动态依赖 glibc 基础组件，MKL/C++/OpenMP 运行库均静态链接。
-2026-09-06 许可修订后的源码包又使用 oneMKL 2024.2 完成新解压构建、
-默认 H0、`--with-vl` 和嵌入许可输出检查；2023.2/2024.2 的许可目录
-自动选择及缺失目录报错也已验证。
+先前修订也曾使用 oneMKL 2023.2.0 编译；2023.2/2024.2 的许可目录
+自动选择及缺失目录报错已验证，当前程序的嵌入许可输出也已检查。
 
 1. 下载本目录中的 `abacus-h0lite-v311_source.tar.gz`，放到仓库外的工作
    目录并解压：
@@ -294,8 +325,9 @@ bash ./build_h0lite_single.sh . /path/to/build-h0lite /path/to/bin/abacus_h0
 编译器改变时，旧 `CMakeCache.txt` 和 `CMakeFiles/` 会移入构建目录的
 `compiler-cache-backup.XXXXXX/`，然后重新配置，无需手动删除源码或缓存。
 
-源码来自 ABACUS 3.11.0-beta8 commit
-`d88b719ea287e13b0e133eb57b8e16baa5361fa6`，已应用 H0Lite 修改。修改
+主体源码来自 ABACUS 3.11.0-beta8 commit
+`d88b719ea287e13b0e133eb57b8e16baa5361fa6`，已应用 H0Lite 修改；
+H0 兼容设置位于 3.11 的 `two_center_bundle` 和 `two_center_table` 中。修改
 `source/source_main/h0lite.cpp` 可调整数值调用；
 `source/source_main/h0lite_frontend.cpp` 包含命令行和批量调度；原有模块
 路径保持不变。编辑后再次运行同一构建命令即可增量编译。若新增 C++

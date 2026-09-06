@@ -206,6 +206,354 @@ index 0c16532..78acd79 100644
  # ==============================================================================
  # Final link closure and ordering
  # ==============================================================================
+diff --git a/source/source_base/spherical_bessel_transformer.cpp b/source/source_base/spherical_bessel_transformer.cpp
+index ce4ee7e..a2c54dc 100644
+--- a/source/source_base/spherical_bessel_transformer.cpp
++++ b/source/source_base/spherical_bessel_transformer.cpp
+@@ -1,3 +1,4 @@
++// Modified 2026-09-06 by HamGNN H0Lite contributors: parallel independent direct-transform rows.
+ #include "source_base/spherical_bessel_transformer.h"
+ 
+ #include <vector>
+@@ -7,6 +8,10 @@
+ #include <cassert>
+ #include <complex>
+ 
++#ifdef _OPENMP
++#include <omp.h>
++#endif
++
+ #include "source_base/math_integral.h"
+ #include "source_base/math_sphbes.h"
+ 
+@@ -303,10 +308,9 @@ void SphericalBesselTransformer::Impl::direct(
+     assert(std::is_sorted(grid_in, grid_in + ngrid_in, std::less_equal<double>()));
+     assert(std::is_sorted(grid_out, grid_out + ngrid_out, std::less_equal<double>()));
+ 
+-    std::vector<double> buffer(3 * ngrid_in);
++    std::vector<double> buffer(2 * ngrid_in);
+     double* rab = buffer.data();
+     double* tmp = rab + ngrid_in; // integrand without the jl part
+-    double* integrand = tmp + ngrid_in; // integrand
+ 
+     std::adjacent_difference(grid_in, grid_in + ngrid_in, rab);
+ 
+@@ -318,11 +322,38 @@ void SphericalBesselTransformer::Impl::direct(
+     // (will be cleared at the end of this function if cache is disabled)
+     _tabulate(l, ngrid_in, grid_in, ngrid_out, grid_out);
+ 
+-    for (int j = 0; j < ngrid_out; ++j)
+-    {
+-        double* jl = &jl_[j * grid_in_.size()];
++    const double* bessel_values = jl_.data();
++    const size_t table_stride = grid_in_.size();
++    const auto integrate_row = [&](const int j, double* integrand) {
++        const double* jl = bessel_values + j * table_stride;
+         std::transform(tmp, tmp + ngrid_in, jl, integrand, std::multiplies<double>());
+         out[j] = ModuleBase::Integral::simpson(ngrid_in, integrand, &rab[1]);
++    };
++
++#ifdef _OPENMP
++    const size_t work = static_cast<size_t>(ngrid_in) * ngrid_out;
++    const int row_threads = std::min(omp_get_max_threads(), ngrid_out);
++    if (!omp_in_parallel() && row_threads > 1 && ngrid_out >= 8
++        && work / static_cast<size_t>(row_threads) >= 16384)
++    {
++#pragma omp parallel num_threads(row_threads)
++        {
++            std::vector<double> integrand(ngrid_in);
++#pragma omp for schedule(static)
++            for (int j = 0; j < ngrid_out; ++j)
++            {
++                integrate_row(j, integrand.data());
++            }
++        }
++    }
++    else
++#endif
++    {
++        std::vector<double> integrand(ngrid_in);
++        for (int j = 0; j < ngrid_out; ++j)
++        {
++            integrate_row(j, integrand.data());
++        }
+     }
+ 
+     const double pref = std::sqrt(2.0 / std::acos(-1.0));
+diff --git a/source/source_basis/module_nao/two_center_bundle.cpp b/source/source_basis/module_nao/two_center_bundle.cpp
+index 9e9ceea..800a34a 100644
+--- a/source/source_basis/module_nao/two_center_bundle.cpp
++++ b/source/source_basis/module_nao/two_center_bundle.cpp
+@@ -1,3 +1,4 @@
++// Modified 2026-09-06 by HamGNN H0Lite contributors: native fixed-grid H0 tables.
+ #include "source_basis/module_nao/two_center_bundle.h"
+ 
+ #include "source_base/global_variable.h"
+@@ -7,6 +8,7 @@
+ #include "source_basis/module_nao/real_gaunt_table.h"
+ 
+ #include <memory>
++#include <stdexcept>
+ 
+ void TwoCenterBundle::build_orb(int ntype, const std::string* file_orb0, const std::string& orbital_dir)
+ {
+@@ -203,6 +205,41 @@ void TwoCenterBundle::tabulate(const double lcao_ecut,
+     sbt.clear();
+ }
+ 
++void TwoCenterBundle::tabulate_h0_compat(double lcao_ecut, double lcao_dk,
++                                        double lcao_dr, double lcao_rmax)
++{
++    ModuleBase::SphericalBesselTransformer sbt(true);
++    orb_->set_transformer(sbt);
++    beta_->set_transformer(sbt);
++    int nk = static_cast<int>((lcao_ecut < 20 ? 2.0 : 1.0) * std::sqrt(lcao_ecut) / lcao_dk) + 4;
++    nk += 1 - nk % 2;
++    std::vector<double> kgrid(nk);
++    for (int ik = 0; ik < nk; ++ik) kgrid[ik] = ik * lcao_dk;
++    orb_->set_grid(false, nk, kgrid.data(), 't');
++    beta_->set_grid(false, nk, kgrid.data(), 't');
++
++    using Interpolation = TwoCenterTable::Interpolation;
++    const auto build = [&](std::unique_ptr<TwoCenterIntegrator>& integrator,
++                           const RadialCollection& ket, char op, Interpolation interpolation) {
++        const double cutoff = orb_->rcut_max() + ket.rcut_max();
++        int nr = static_cast<int>(cutoff / lcao_dr) + 5;
++        nr += 1 - nr % 2;
++        int capacity = static_cast<int>(lcao_rmax / lcao_dr) + 4;
++        capacity += 1 - capacity % 2;
++        if (nr >= capacity)
++            throw std::runtime_error("lcao_rmax must exceed the largest H0 orbital/projector pair cutoff");
++        integrator.reset(new TwoCenterIntegrator(interpolation));
++        integrator->tabulate(*orb_, ket, op, nr, (nr - 1) * lcao_dr);
++    };
++    build(kinetic_orb, *orb_, 'T', Interpolation::FourPointOrbital);
++    build(overlap_orb, *orb_, 'S', Interpolation::FourPointOrbital);
++    build(overlap_orb_beta, *beta_, 'S', Interpolation::FourPointProjector);
++    ModuleBase::Memory::record("TwoCenterTable: Kinetic", kinetic_orb->table_memory());
++    ModuleBase::Memory::record("TwoCenterTable: Overlap", overlap_orb->table_memory());
++    ModuleBase::Memory::record("TwoCenterTable: Nonlocal", overlap_orb_beta->table_memory());
++    sbt.clear();
++}
++
+ void TwoCenterBundle::to_LCAO_Orbitals(LCAO_Orbitals& ORB,
+                                        const double lcao_ecut,
+                                        const double lcao_dk,
+diff --git a/source/source_basis/module_nao/two_center_bundle.h b/source/source_basis/module_nao/two_center_bundle.h
+index 1e1db87..b1d8084 100644
+--- a/source/source_basis/module_nao/two_center_bundle.h
++++ b/source/source_basis/module_nao/two_center_bundle.h
+@@ -1,3 +1,4 @@
++// Modified 2026-09-06 by HamGNN H0Lite contributors: explicit H0 table entry.
+ #ifndef TWO_CENTER_BUNDLE_H
+ #define TWO_CENTER_BUNDLE_H
+ 
+@@ -26,6 +27,7 @@ class TwoCenterBundle
+     // two-center integration table by direct integration with Simpson's
+     // rule, which was the algorithm used prior to v3.3.4.
+     void tabulate(const double lcao_ecut, const double lcao_dk, const double lcao_dr, const double lcao_rmax);
++    void tabulate_h0_compat(double lcao_ecut, double lcao_dk, double lcao_dr, double lcao_rmax);
+ 
+     /**
+      * @brief Overwrites the content of a LCAO_Orbitals object (e.g. ORB)
+diff --git a/source/source_basis/module_nao/two_center_integrator.cpp b/source/source_basis/module_nao/two_center_integrator.cpp
+index 436f388..8b855f4 100644
+--- a/source/source_basis/module_nao/two_center_integrator.cpp
++++ b/source/source_basis/module_nao/two_center_integrator.cpp
+@@ -1,3 +1,4 @@
++// Modified 2026-09-06 by HamGNN H0Lite contributors: explicit table interpolation.
+ #include "source_basis/module_nao/two_center_integrator.h"
+ 
+ #include "source_base/vector3.h"
+@@ -9,6 +10,10 @@ TwoCenterIntegrator::TwoCenterIntegrator():
+ {
+ }
+ 
++TwoCenterIntegrator::TwoCenterIntegrator(TwoCenterTable::Interpolation interpolation)
++    : is_tabulated_(false), op_('\0'), table_(interpolation)
++{}
++
+ void TwoCenterIntegrator::tabulate(const RadialCollection& bra,
+                                    const RadialCollection& ket,
+                                    const char op,
+diff --git a/source/source_basis/module_nao/two_center_integrator.h b/source/source_basis/module_nao/two_center_integrator.h
+index 285ffe8..6f72888 100644
+--- a/source/source_basis/module_nao/two_center_integrator.h
++++ b/source/source_basis/module_nao/two_center_integrator.h
+@@ -1,3 +1,4 @@
++// Modified 2026-09-06 by HamGNN H0Lite contributors: explicit table interpolation.
+ #ifndef TWO_CENTER_INTEGRATOR_H_
+ #define TWO_CENTER_INTEGRATOR_H_
+ 
+@@ -35,6 +36,7 @@ class TwoCenterIntegrator
+ {
+   public:
+     TwoCenterIntegrator();
++    explicit TwoCenterIntegrator(TwoCenterTable::Interpolation interpolation);
+     TwoCenterIntegrator(const TwoCenterIntegrator&) = delete;
+     TwoCenterIntegrator& operator=(const TwoCenterIntegrator&) = delete;
+ 
+diff --git a/source/source_basis/module_nao/two_center_table.cpp b/source/source_basis/module_nao/two_center_table.cpp
+index d2ef6fb..a59cf5a 100644
+--- a/source/source_basis/module_nao/two_center_table.cpp
++++ b/source/source_basis/module_nao/two_center_table.cpp
+@@ -1,3 +1,4 @@
++// Modified 2026-09-06 by HamGNN H0Lite contributors: fixed-grid four-point lookup.
+ #include "source_basis/module_nao/two_center_table.h"
+ 
+ #include "source_base/constants.h"
+@@ -9,6 +10,7 @@
+ #include <iostream>
+ #include <limits>
+ #include <numeric>
++#include <stdexcept>
+ 
+ void TwoCenterTable::build(const RadialCollection& bra,
+                            const RadialCollection& ket,
+@@ -49,6 +51,15 @@ void TwoCenterTable::build(const RadialCollection& bra,
+     ntab_ = 0;
+     two_center_loop(bra, ket, &TwoCenterTable::_indexing);
+ 
++    if (interpolation_ != Interpolation::CubicSpline)
++    {
++        bra_cutoffs_.resize(bra.ntype());
++        ket_cutoffs_.resize(ket.ntype());
++        for (int it = 0; it < bra.ntype(); ++it) bra_cutoffs_[it] = bra.rcut_max(it);
++        for (int it = 0; it < ket.ntype(); ++it) ket_cutoffs_[it] = ket.rcut_max(it);
++        pair_cutoffs_.resize(ntab_);
++        pair_nr_.resize(ntab_);
++    }
+     table_.resize({ntab_, nr_});
+     dtable_.resize({ntab_, nr_});
+     two_center_loop(bra, ket, &TwoCenterTable::_tabulate);
+@@ -98,6 +109,44 @@ void TwoCenterTable::lookup(const int itype1,
+     }
+ 
+     const double* tab = table(itype1, l1, izeta1, itype2, l2, izeta2, l, false);
++    if (interpolation_ != Interpolation::CubicSpline)
++    {
++        if (dval || d2val)
++            throw std::logic_error("H0 four-point tables do not provide derivatives");
++        if (!val) return;
++        const int itab = index_map_.get_value<int>(itype1, l1, izeta1, itype2, l2, izeta2, l);
++        if (R > pair_cutoffs_[itab])
++        {
++            *val = 0.0;
++            return;
++        }
++        if (R <= 1e-10)
++        {
++            *val = tab[0];
++            return;
++        }
++        const double dr = rmax_ / (nr_ - 1);
++        const double position = R / dr;
++        const int iq = static_cast<int>(position);
++        if (iq >= pair_nr_[itab] - 4)
++        {
++            *val = 0.0;
++            return;
++        }
++        const double x0 = position - iq;
++        const double x1 = 1.0 - x0;
++        const double x2 = 2.0 - x0;
++        const double x3 = 3.0 - x0;
++        double raw;
++        if (interpolation_ == Interpolation::FourPointProjector)
++            raw = x1*x2*x3/6.0*tab[iq] + x1*x2*x0/6.0*tab[iq+3]
++                  + x0*x3*x2/2.0*tab[iq+1] - x0*x3*x1/2.0*tab[iq+2];
++        else
++            raw = x1*x2*(tab[iq]*x3+tab[iq+3]*x0)/6.0
++                  + x0*x3*(tab[iq+1]*x2-tab[iq+2]*x1)/2.0;
++        *val = raw / std::pow(R, l);
++        return;
++    }
+     const double* dtab = table(itype1, l1, izeta1, itype2, l2, izeta2, l, true);
+     ModuleBase::CubicSpline::eval(nr_, rgrid_, tab, dtab, 1, &R, val, dval, d2val);
+ }
+@@ -120,6 +169,10 @@ void TwoCenterTable::cleanup()
+     dtable_.resize({0});
+     index_map_.resize({0});
+     nchi_ket_.resize({0});
++    bra_cutoffs_.clear();
++    ket_cutoffs_.clear();
++    pair_cutoffs_.clear();
++    pair_nr_.clear();
+ }
+ 
+ bool TwoCenterTable::is_present(const int itype1,
+@@ -189,10 +242,23 @@ void TwoCenterTable::_tabulate(const NumericalRadial* it1, const NumericalRadial
+     //
+     // See the developer's document for more details.
+     double dr = rmax_ / (nr_ - 1);
++    if (interpolation_ != Interpolation::CubicSpline)
++    {
++        const double ket_cutoff = interpolation_ == Interpolation::FourPointProjector
++                                      ? it2->rcut() : ket_cutoffs_[it2->itype()];
++        pair_cutoffs_[itab] = bra_cutoffs_[it1->itype()] + ket_cutoff;
++        int nr_pair = static_cast<int>(pair_cutoffs_[itab] / dr) + 5;
++        nr_pair += 1 - nr_pair % 2;
++        if (nr_pair > nr_)
++            throw std::runtime_error("lcao_rmax is too small for an H0 radial pair");
++        pair_nr_[itab] = nr_pair;
++        std::fill(tab + nr_pair, tab + nr_, 0.0);
++    }
+     if (l > 0)
+     {
+         // divide S(R) by R^l (except the R=0 point)
+-        std::for_each(&tab[1], tab + nr_, [&](double& val) { val /= std::pow(dr * (&val - tab), l); });
++        if (interpolation_ == Interpolation::CubicSpline)
++            std::for_each(&tab[1], tab + nr_, [&](double& val) { val /= std::pow(dr * (&val - tab), l); });
+ 
+         // special treatment for R=0
+         int nk = it1->nk();
+@@ -225,6 +291,12 @@ void TwoCenterTable::_tabulate(const NumericalRadial* it1, const NumericalRadial
+         delete[] h;
+     }
+ 
++    if (interpolation_ != Interpolation::CubicSpline)
++    {
++        std::fill_n(dtable_.inner_most_ptr<double>(itab), nr_, 0.0);
++        return;
++    }
++
+     // The derivative table stores the derivative of S(R)/R^l or T(R)/R^l
+     // instead of bare dS(R)/dR or dT(R)/dR, which simplifies further calculation.
+     //
+diff --git a/source/source_basis/module_nao/two_center_table.h b/source/source_basis/module_nao/two_center_table.h
+index dc97787..e27fcf8 100644
+--- a/source/source_basis/module_nao/two_center_table.h
++++ b/source/source_basis/module_nao/two_center_table.h
+@@ -1,13 +1,17 @@
++// Modified 2026-09-06 by HamGNN H0Lite contributors: explicit four-point tables.
+ #ifndef TWO_CENTER_TABLE_H
+ #define TWO_CENTER_TABLE_H
+ 
+ #include <ATen/tensor.h>
++#include <vector>
+ #include "source_basis/module_nao/radial_collection.h"
+ 
+ class TwoCenterTable
+ {
+   public:
++    enum class Interpolation { CubicSpline, FourPointOrbital, FourPointProjector };
+     TwoCenterTable() = default;
++    explicit TwoCenterTable(Interpolation interpolation) : interpolation_(interpolation) {}
+     ~TwoCenterTable() { delete[] rgrid_; }
+ 
+     TwoCenterTable(const TwoCenterTable&) = delete;
+@@ -83,6 +87,11 @@ class TwoCenterTable
+     }
+ 
+   private:
++    const Interpolation interpolation_ = Interpolation::CubicSpline;
++    std::vector<double> bra_cutoffs_;
++    std::vector<double> ket_cutoffs_;
++    std::vector<double> pair_cutoffs_;
++    std::vector<int> pair_nr_;
+     char op_ = '\0';   //!< operator associated with the present table
+     int ntab_ = 0;     //!< number of table entries
+     int nr_ = 0;       //!< number of radial points of each table
 diff --git a/source/source_io/module_parameter/read_input.cpp b/source/source_io/module_parameter/read_input.cpp
 index b98254a..b8da1b2 100644
 --- a/source/source_io/module_parameter/read_input.cpp
@@ -254,10 +602,10 @@ index c938bdb..5d458f9 100644
      /**
 diff --git a/source/source_main/h0lite.cpp b/source/source_main/h0lite.cpp
 new file mode 100644
-index 0000000..d76180e
+index 0000000..155386c
 --- /dev/null
 +++ b/source/source_main/h0lite.cpp
-@@ -0,0 +1,542 @@
+@@ -0,0 +1,560 @@
 +// SPDX-License-Identifier: LGPL-3.0-or-later
 +// Copyright (C) 2026 HamGNN H0Lite contributors (2004huwa).
 +// Modified ABACUS frontend, updated 2026-09-06; see licenses/H0Lite-NOTICE.txt.
@@ -593,8 +941,8 @@ index 0000000..d76180e
 +                       PARAM.inp.init_wfc,
 +                       PARAM.inp.nbands);
 +
-+    TwoCenterBundle two_center;
 +    LCAO_Orbitals orbitals;
++    TwoCenterBundle two_center;
 +    two_center.build_orb(ucell.ntype, ucell.orbital_fn.data(), PARAM.inp.orbital_dir);
 +    two_center.to_LCAO_Orbitals(orbitals,
 +                                PARAM.inp.lcao_ecut,
@@ -614,7 +962,25 @@ index 0000000..d76180e
 +                                 PARAM.inp.nspin);
 +    ucell.infoNL.reset(nonlocal_info);
 +    two_center.build_beta(ucell.ntype, nonlocal_info->get_nonlocal().Beta);
-+    two_center.tabulate();
++    // The archived scalar 3.5.3 exporter retained only diagonal projector D.
++    for (int it = 0; it < ucell.ntype; ++it)
++    {
++        auto& pseudo = ucell.atoms[it].ncpp;
++        if (!pseudo.has_so)
++        {
++            ModuleBase::ComplexMatrix diagonal_d(2 * pseudo.nh, 2 * pseudo.nh);
++            for (int ip = 0; ip < pseudo.nh; ++ip)
++            {
++                diagonal_d(ip, ip) = pseudo.d_real(ip, ip);
++                diagonal_d(ip + pseudo.nh, ip + pseudo.nh) = pseudo.d_real(ip, ip);
++            }
++            pseudo.set_d_so(diagonal_d, pseudo.nbeta, pseudo.nh, false, false, 1);
++        }
++    }
++    two_center.tabulate_h0_compat(PARAM.inp.lcao_ecut, PARAM.inp.lcao_dk,
++                                  PARAM.inp.lcao_dr, PARAM.inp.lcao_rmax);
++    GlobalV::ofs_running << "numerical_backend: abacus-v311-simpson-compatible\n"
++                         << "nonlocal_projector_coupling: v353-scalar-diagonal\n";
 +    const long long setup_ms = milliseconds(total_start);
 +
 +    Parallel_Orbitals pv;
@@ -817,10 +1183,10 @@ index 0000000..aad1694
 +int h0lite_run_core(const std::string& input, const std::string& output_dir, bool with_vl);
 diff --git a/source/source_main/h0lite_frontend.cpp b/source/source_main/h0lite_frontend.cpp
 new file mode 100644
-index 0000000..d6e147e
+index 0000000..e71c797
 --- /dev/null
 +++ b/source/source_main/h0lite_frontend.cpp
-@@ -0,0 +1,1171 @@
+@@ -0,0 +1,1174 @@
 +// SPDX-License-Identifier: LGPL-3.0-or-later
 +// Copyright (C) 2026 HamGNN H0Lite contributors (2004huwa).
 +// Modified ABACUS frontend, updated 2026-09-06; see licenses/H0Lite-NOTICE.txt.
@@ -864,7 +1230,7 @@ index 0000000..d6e147e
 +namespace
 +{
 +
-+constexpr const char* kGenerator = "ABACUS-3.11-H0Lite-native-single-v1";
++constexpr const char* kGenerator = "ABACUS-3.11-H0Lite-native-simpson-v3";
 +constexpr const char* kMarkerName = "get_H0-v311-strict.json";
 +constexpr const char* kH0Contract = "H0=T+Vnl; S0=NAO overlap; no Vl/Veff/DFT+U/EXX/DeePKS";
 +constexpr const char* kH0VlContract = "H0=T+Vnl+Vl; S0=NAO overlap; no Hartree/XC/DFT+U/EXX/DeePKS";
@@ -1544,9 +1910,12 @@ index 0000000..d6e147e
 +           << "  \"status\": \"complete\",\n"
 +           << "  \"created_at_utc\": " << quote(utc_now()) << ",\n"
 +           << "  \"generator\": " << quote(kGenerator) << ",\n"
++           << "  \"numerical_backend\": \"abacus-v311-simpson-compatible\",\n"
++           << "  \"nonlocal_projector_coupling\": \"v353-scalar-diagonal\",\n"
 +           << "  \"operator_contract\": " << quote(with_vl ? kH0VlContract : kH0Contract) << ",\n"
 +           << "  \"output_validation\": {\"integrity_on_demand\": true, \"recorded_size_check\": false},\n"
-+           << "  \"binary\": {\"source_commit\": " << quote(H0LITE_ABACUS_COMMIT) << "},\n"
++           << "  \"binary\": {\"source_commit\": " << quote(H0LITE_ABACUS_COMMIT)
++           << ", \"package_revision\": " << quote(kH0LitePackageRevision) << "},\n"
 +           << "  \"execution\": {\n"
 +           << "    \"omp_num_threads\": " << cpus << ",\n"
 +           << "    \"local_tasks\": " << tasks << ",\n"
@@ -1994,7 +2363,7 @@ index 0000000..d6e147e
 +}
 diff --git a/source/source_main/h0lite_licenses.h.in b/source/source_main/h0lite_licenses.h.in
 new file mode 100644
-index 0000000..2bb27fa
+index 0000000..67a7feb
 --- /dev/null
 +++ b/source/source_main/h0lite_licenses.h.in
 @@ -0,0 +1,13 @@
@@ -2003,7 +2372,7 @@ index 0000000..2bb27fa
 +// Generated at configure time. Do not edit the generated header.
 +#pragma once
 +
-+inline constexpr const char kH0LitePackageRevision[] = "h0lite-v311-20260906";
++inline constexpr const char kH0LitePackageRevision[] = "h0lite-v311-simpson-20260906";
 +inline constexpr const char kAbacusLicenseText[] = R"H0LABACUS(@H0LITE_ABACUS_LICENSE_TEXT@)H0LABACUS";
 +inline constexpr const char kGplLicenseText[] = R"H0LGPL(@H0LITE_GPL_LICENSE_TEXT@)H0LGPL";
 +inline constexpr const char kH0LiteNoticeText[] = R"H0LNOTICE(@H0LITE_NOTICE_TEXT@)H0LNOTICE";
@@ -2975,12 +3344,12 @@ index 0000000..f288702
 +<https://www.gnu.org/licenses/why-not-lgpl.html>.
 diff --git a/source/source_main/licenses/H0Lite-NOTICE.txt b/source/source_main/licenses/H0Lite-NOTICE.txt
 new file mode 100644
-index 0000000..26c3b28
+index 0000000..03d30f1
 --- /dev/null
 +++ b/source/source_main/licenses/H0Lite-NOTICE.txt
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,47 @@
 +ABACUS H0Lite: modified ABACUS source, not an official ABACUS release
-+Package revision: h0lite-v311-20260906
++Package revision: h0lite-v311-simpson-20260906
 +Modification date: 2026-09-06
 +Modifications by: HamGNN H0Lite contributors (2004huwa)
 +Copyright (C) 2026 HamGNN H0Lite contributors for their additions.
@@ -2996,6 +3365,12 @@ index 0000000..26c3b28
 +Changes: standalone H0/S0 frontend without SCF or diagonalization; optional
 +local ionic potential merged into H0; preserved SCF input parsing; native
 +batch scheduling and Slurm sharding; static build and license embedding.
++Numerical integration uses the ABACUS 3.11 finite-grid Simpson implementation.
++An explicit H0-only table mode restores historical distance-grid, cutoff and
++four-point interpolation conventions; scalar diagonal-projector coupling is
++retained for compatibility. Independent direct-transform rows use OpenMP.
++The previous imported ORB_gen_tables/ORB_table_phi/ORB_table_beta modules have
++been removed; the separate historical 3.5.3 archive remains unchanged.
 +The trimmed package omits unused code and the optional MemCheckDeluxe debug
 +header. See SOURCE_INFO.md and the maintenance patch for details.
 +
