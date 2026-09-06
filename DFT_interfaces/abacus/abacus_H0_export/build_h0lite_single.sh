@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-3.0-or-later
+# Copyright (C) 2026 HamGNN H0Lite contributors (2004huwa), updated 2026-09-06.
 # Build the H0Lite-only ABACUS frontend as one x86_64 Linux executable.
 
 set -euo pipefail
@@ -88,5 +90,6 @@ if [[ "$(realpath -m "${build_dir}/abacus_h0")" != "$(realpath -m "${output_file
 fi
 
 echo "Built ${output_file}"
+echo "Redistribution requires matching source and notices; see NOTICE.md and --license."
 file "${output_file}"
 grep -E 'NEEDED|RPATH|RUNPATH' <<< "${dynamic_info}" || true

@@ -5,6 +5,9 @@
 ```text
 README.md
 README_zh.md
+NOTICE.md
+COPYING
+COPYING.LESSER
 abacus-3.11.0-beta8-h0lite.patch
 abacus-h0lite-v311_source.tar.gz
 abacus-postprocess-v353_source.tar.gz
@@ -19,9 +22,10 @@ ABACUS 代码、独立 CMake 入口、构建脚本和许可证。下载这一个
 按下文编译，无需另行下载完整 ABACUS，也无需再次应用补丁。旧 3.5.3
 源码包保留；旁边的 `.patch` 仅用于维护完整 ABACUS 开发源码树。
 
-`abacus_h0` 是从 ABACUS 3.11 源码裁出的 H0/S0 计算程序。最终分发物只有
+`abacus_h0` 是从 ABACUS 3.11 源码裁出的 H0/S0 计算程序。运行时只需
 一个 x86_64 Linux ELF 文件，不依赖 Python、Conda、MPI、完整 ABACUS、
-oneAPI 模块或随包动态库。
+oneAPI 模块或随包动态库。对外分发二进制仍须提供对应源码和许可证，
+见下文“许可与再分发”；源码不必安装到运行节点。
 
 默认计算：
 
@@ -183,7 +187,25 @@ chmod +x abacus_h0
 ```
 
 它不是 ARM、macOS 或 Windows 原生程序。`--license` 输出嵌入 ELF 中的
-ABACUS、GCC runtime 和 oneMKL 许可证及第三方声明。
+完整 GPL/LGPL、修改者及源码说明、GCC runtime、BLACS 和实际使用的
+oneMKL 许可证及第三方声明。
+
+## 许可与再分发
+
+H0Lite 是修改过的 ABACUS 子集，并非官方 ABACUS 发行版。原作者的
+版权声明保留；新增 H0Lite 代码沿用 LGPL-3.0-or-later。目录中的
+`COPYING`、`COPYING.LESSER` 分别提供完整 GPLv3 和 LGPLv3，修改日期、
+署名及分发要求见 [NOTICE.md](NOTICE.md)。第三方组件保留各自许可证。
+
+“只需一个可执行文件”是部署要求，不是免除源码义务。对外提供二进制
+下载时，应在同一下载位置等同提供该二进制实际对应的修改源码包、构建
+脚本和许可材料，记录编译环境及选项。继续修改后分发时也要提供修改后
+的对应源码，允许对相关代码修改、重编译/重新链接及调试修改所需的逆向
+工程；不能只给原始 ABACUS 或不断变化的分支链接。许可证要求时还须
+提供安装信息。`--license` 输出许可文本，但不代替提供对应源码。
+
+历史 `abacus-postprocess-v353_source.tar.gz` 保持原样，不在本次修订
+范围。具体下游组合和分发方式仍需按其适用许可证判断。
 
 ## 从源码构建
 
@@ -195,9 +217,25 @@ binutils、`file` 和 oneMKL 静态开发库（推荐 2023.2）。GCC 安装需�
 这些编译工具和数学库由构建环境提供，不包含在源码包中；环境就绪后，
 构建过程不访问网络。不需要 MPI、ELPA、Libxc、RapidJSON、Python 或 Conda。
 
+oneMKL 安装还须包含 `license.txt`、`third-party-programs.txt`。
+构建会从实际链接的 MKL 库所在安装中查找 `licensing/` 或
+`share/doc/mkl/licensing/`，跟随统一 oneAPI 目录中的符号链接，并将
+该目录的许可和 `third-party-programs*.txt` 嵌入可执行文件。非标准
+布局可在编译前指定：
+
+```bash
+export H0LITE_MKL_LICENSE_DIR=/path/to/the/same/mkl/installation/licensing
+```
+
+也可直接配置 CMake 时传 `-DH0LITE_MKL_LICENSE_DIR=/path/to/licensing`。
+缺失时构建会明确报错，不能拿另一版本的许可文本替代。
+
 本源码包已在 GCC 10.5.0、CMake 3.31.7、oneMKL 2023.2.0、glibc 2.28
 环境从新解压目录完成编译，并运行通过默认 H0 和 `--with-vl` 两种模式。
 生成文件仅动态依赖 glibc 基础组件，MKL/C++/OpenMP 运行库均静态链接。
+2026-09-06 许可修订后的源码包又使用 oneMKL 2024.2 完成新解压构建、
+默认 H0、`--with-vl` 和嵌入许可输出检查；2023.2/2024.2 的许可目录
+自动选择及缺失目录报错也已验证。
 
 1. 下载本目录中的 `abacus-h0lite-v311_source.tar.gz`，放到仓库外的工作
    目录并解压：
@@ -241,9 +279,10 @@ binutils、`file` 和 oneMKL 静态开发库（推荐 2023.2）。GCC 安装需�
    ./bin/abacus_h0 --help
    ```
 
-默认构建目录为 `build-h0lite-single/`，可分发文件为 `bin/abacus_h0`。
+默认构建目录为 `build-h0lite-single/`，运行文件为 `bin/abacus_h0`。
 Slurm 中优先使用 `SLURM_CPUS_PER_TASK` 作为编译并行数；Slurm 外使用
-`BUILD_CPUS`（默认 1）。只需将生成的 `bin/abacus_h0` 复制到运行服务器。
+`BUILD_CPUS`（默认 1）。运行服务器只需复制生成的 `bin/abacus_h0`；
+对外分发时另行提供前述对应源码和许可材料。
 需要自定义目录时仍支持原来的三个位置参数：
 
 ```bash
